@@ -1,19 +1,64 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, url_for, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flask_swagger import swagger
 from flask_cors import CORS
+#
+from utils import APIException, generate_sitemap
 from models import db
+from routes import api
+from admin import setup_admin
+from commands import setup_commands
+from flask_jwt_extended import create_access_token
+from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import jwt_required
+from flask_jwt_extended import JWTManager
 
-BASEDIR = os.path.abspath(os.path.dirname(__file__))
-
+ENV = os.getenv("FLASK_ENV")
+static_file_dir = os.path.join(os.path.dirname(
+    os.path.realpath(__file__)), '../public/')
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + \
-    os.path.join(BASEDIR, "auth.db")
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["ENV"] = "development"
+app.url_map.strict_slashes = False
+
+db_url = os.getenv("DATABASE_URL")
+if db_url is not None:
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url.replace(
+        "postgres://", "postgresql://")
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:////tmp/test.db"
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+MIGRATE = Migrate(app, db, compare_type=True)
+db.init_app(app)
 
 CORS(app)
-db.init_app(app)
-Migrate(app, db)
+setup_admin(app)
+setup_commands(app)
+app.register_blueprint(api, url_prefix='/api')
 
+
+@app.errorhandler(APIException)
+def handle_invalid_usage(error):
+    return jsonify(error.to_dict()), error.status_code
+
+
+@app.route('/')
+def sitemap():
+    if ENV == "development":
+        return generate_sitemap(app)
+    return send_from_directory(static_file_dir, 'index.html')
+
+
+@app.route('/<path:path>', methods=['GET'])
+def serve_any_other_file(path):
+    if not os.path.isfile(os.path.join(static_file_dir, path)):
+        path = 'index.html'
+    response = send_from_directory(static_file_dir, path)
+    response.cache_control.max_age = 0
+    return response
+
+
+if __name__ == '__main__':
+    PORT = int(os.environ.get('PORT', 3001))
+    app.run(host='0.0.0.0', port=PORT, debug=True)
